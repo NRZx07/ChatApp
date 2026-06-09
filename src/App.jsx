@@ -1,13 +1,39 @@
-import { useState, useEffect } from "react";
-import { supabase } from "../supabaseClient"; // Make sure your path matches your project layout
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "../supabaseClient"; // double check if it should be "./supabaseClient" based on your folders!
 
-function ChatRoom({ user }) {
+function App() {
+  const [session, setSession] = useState(undefined);
+  const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
-  const [text, setText] = useState("");
-  const [friendId, setFriendId] = useState(""); // Holds your friend's UUID key
+  const [friendId, setFriendId] = useState("");
 
-  // 1. Fetch private history and listen to realtime updates whenever friendId changes
+  const messagesEndRef = useRef(null);
+
+  // 1. Manage User Authentication Session
   useEffect(() => {
+    const getSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      setSession(session);
+    };
+
+    getSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 2. Fetch Private History & Open Isolated Realtime Subscription
+  useEffect(() => {
+    // CRITICAL GUARD: Stop executing if there is no logged-in user session
+    if (!session?.user) return;
+
     if (!friendId.trim()) {
       setMessages([]);
       return;
@@ -18,28 +44,29 @@ function ChatRoom({ user }) {
         .from("messages")
         .select("*")
         .or(
-          `and(sender_id.eq.${user.id},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${user.id})`,
+          `and(sender_id.eq.${session.user.id},receiver_id.eq.${friendId.trim()}),and(sender_id.eq.${friendId.trim()},receiver_id.eq.${session.user.id})`,
         )
         .order("created_at", { ascending: true });
 
-      if (error) console.error("Fetch error:", error.message);
-      if (data) setMessages(data);
+      if (!error && data) {
+        setMessages(data);
+      }
     };
 
     fetchPrivateMessages();
 
-    // Setup an isolated real-time channel for this unique 2-way relationship
     const channel = supabase
-      .channel(`private-room-${friendId}`)
+      .channel(`private-room-${friendId.trim()}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
           const msg = payload.new;
-          // Verify incoming realtime payload belongs strictly to this conversation before showing it
           if (
-            (msg.sender_id === user.id && msg.receiver_id === friendId) ||
-            (msg.sender_id === friendId && msg.receiver_id === user.id)
+            (msg.sender_id === session.user.id &&
+              msg.receiver_id === friendId.trim()) ||
+            (msg.sender_id === friendId.trim() &&
+              msg.receiver_id === session.user.id)
           ) {
             setMessages((prev) => [...prev, msg]);
           }
@@ -50,146 +77,365 @@ function ChatRoom({ user }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [friendId, user.id]);
+  }, [session, friendId]);
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if (!text.trim() || !friendId.trim()) return;
+  // 3. Smooth-scroll down window automatically on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-    const { error } = await supabase.from("messages").insert([
-      {
-        text: text,
-        sender_id: user.id, // Your active authenticated Google ID
-        receiver_id: friendId.trim(), // Your friend's target ID
-        username: user.user_metadata.full_name || user.email,
+  // 4. Google Authentication In/Out Actions
+  const signIn = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo:
+          "https://chat-14tmjx58h-nirajs-projects-6e46d474.vercel.app/",
       },
-    ]);
-
-    if (error) console.error("Send error:", error.message);
-    setText("");
+    });
+    if (error) console.log(error.message);
   };
 
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) console.log(error.message);
+  };
+
+  // 5. Handle sending private chat message to Supabase
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!message.trim() || !session?.user || !friendId.trim()) return;
+
+    const typedText = message;
+    setMessage("");
+
+    const temporaryId = Date.now();
+    const optimisticMessage = {
+      id: temporaryId,
+      text: typedText,
+      sender_id: session.user.id,
+      receiver_id: friendId.trim(),
+      user_name:
+        session.user.user_metadata?.full_name ||
+        session.user.user_metadata?.name ||
+        "User",
+      user_avatar: session.user.user_metadata?.picture,
+      created_at: new Date().toISOString(),
+    };
+
+    setMessages((prev) => [...prev, optimisticMessage]);
+
+    const { error, data } = await supabase
+      .from("messages")
+      .insert([
+        {
+          text: typedText,
+          sender_id: session.user.id,
+          receiver_id: friendId.trim(),
+          user_name: optimisticMessage.user_name,
+          user_avatar: optimisticMessage.user_avatar,
+        },
+      ])
+      .select();
+
+    if (error) {
+      console.error("Error inserting message:", error.message);
+      setMessages((prev) => prev.filter((msg) => msg.id !== temporaryId));
+      setMessage(typedText);
+    } else if (data && data[0]) {
+      setMessages((prev) =>
+        prev.map((msg) => (msg.id === temporaryId ? data[0] : msg)),
+      );
+    }
+  };
+
+  // GUARD A: If session is completely unknown, show loading screen (PREVENTS BLANK SCREEN CRASH)
+  if (session === undefined) {
+    return (
+      <div
+        style={{
+          background: "#111827",
+          color: "white",
+          height: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "sans-serif",
+        }}
+      >
+        Loading Session Data...
+      </div>
+    );
+  }
+
+  // GUARD B: If not logged in, show Auth Wall
+  if (!session) {
+    return (
+      <div
+        style={{
+          background: "#111827",
+          color: "white",
+          height: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "sans-serif",
+        }}
+      >
+        <button
+          onClick={signIn}
+          style={{
+            background: "#3b82f6",
+            color: "white",
+            padding: "12px 24px",
+            borderRadius: "8px",
+            border: "none",
+            cursor: "pointer",
+            fontWeight: "bold",
+          }}
+        >
+          Sign In with Google
+        </button>
+      </div>
+    );
+  }
+
+  // MAIN CONTENT VIEW: Renders safely ONLY when session.user is verified to exist!
   return (
     <div
       style={{
+        background: "#111827",
+        color: "white",
+        minHeight: "100vh",
         padding: "20px",
-        maxWidth: "500px",
-        margin: "0 auto",
         fontFamily: "sans-serif",
       }}
     >
-      {/* BOX 1: YOUR REVEALED ENCRYPTED IDENTITY */}
       <div
         style={{
-          background: "#f0f2f5",
-          padding: "15px",
-          borderRadius: "8px",
-          marginBottom: "20px",
-          border: "1px solid #ddd",
+          background: "#1f2937",
+          border: "1px solid #374151",
+          maxWidth: "600px",
+          margin: "0 auto",
+          borderRadius: "12px",
+          padding: "20px",
         }}
       >
-        <h4 style={{ margin: "0 0 10px 0" }}>Your Personal Chat ID:</h4>
-        <code
+        {/* Header Block */}
+        <div
           style={{
-            background: "#fff",
-            padding: "8px",
-            display: "block",
-            wordBreak: "break-all",
-            borderRadius: "4px",
-            border: "1px solid #ccc",
+            display: "flex",
+            justifyContent: "between",
+            alignItems: "center",
+            borderBottom: "1px solid #374151",
+            paddingBottom: "15px",
           }}
         >
-          {user.id}
-        </code>
-        <p style={{ fontSize: "12px", color: "#666", margin: "8px 0 0 0" }}>
-          👉 Copy this key and send it to your friend!
-        </p>
-      </div>
-
-      {/* BOX 2: TARGET CONNECTION POINT */}
-      <div style={{ marginBottom: "20px" }}>
-        <label>
-          <strong>Paste Friend's Chat ID to open connection:</strong>
-        </label>
-        <input
-          type="text"
-          placeholder="Paste their long UUID key here..."
-          value={friendId}
-          onChange={(e) => setFriendId(e.target.value)}
-          style={{
-            width: "100%",
-            padding: "10px",
-            marginTop: "5px",
-            boxSizing: "border-box",
-            borderRadius: "4px",
-            border: "1px solid #ccc",
-          }}
-        />
-      </div>
-
-      {/* BOX 3: THE PRIVATE SECURED CHAT FLOW */}
-      {friendId.trim() ? (
-        <div>
-          <div
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <img
+              src={
+                session.user.user_metadata?.picture ||
+                "https://placehold.co/150"
+              }
+              alt="profile"
+              style={{ width: "48px", height: "48px", borderRadius: "50%" }}
+              referrerPolicy="no-referrer"
+            />
+            <div>
+              <h2 style={{ margin: 0, fontSize: "18px" }}>
+                {session.user.user_metadata?.full_name || "User"}
+              </h2>
+              <p style={{ margin: 0, fontSize: "14px", color: "#9ca3af" }}>
+                {session.user.email}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={signOut}
             style={{
-              height: "300px",
-              overflowY: "auto",
-              border: "1px solid #ccc",
-              padding: "10px",
-              marginBottom: "10px",
-              borderRadius: "4px",
-              background: "#fafafa",
+              background: "#ef4444",
+              color: "white",
+              padding: "8px 16px",
+              borderRadius: "8px",
+              border: "none",
+              cursor: "pointer",
+              marginLeft: "auto",
             }}
           >
-            {messages.map((msg) => (
-              <div key={msg.id} style={{ margin: "10px 0" }}>
-                <span
-                  style={{
-                    color: msg.sender_id === user.id ? "#0070f3" : "#222",
-                    fontWeight: "bold",
-                  }}
-                >
-                  {msg.username}:
-                </span>{" "}
-                <span>{msg.text}</span>
-              </div>
-            ))}
-          </div>
-          <form onSubmit={handleSend} style={{ display: "flex", gap: "8px" }}>
-            <input
-              type="text"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Type a completely private message..."
+            Sign Out
+          </button>
+        </div>
+
+        {/* Identity Exchange Section */}
+        <div
+          style={{
+            background: "#111827",
+            border: "1px solid #374151",
+            borderRadius: "8px",
+            padding: "15px",
+            margin: "15px 0",
+            fontSize: "14px",
+          }}
+        >
+          <div style={{ marginBottom: "10px" }}>
+            <span
               style={{
-                flexGrow: 1,
-                padding: "10px",
-                borderRadius: "4px",
-                border: "1px solid #ccc",
-              }}
-            />
-            <button
-              type="submit"
-              style={{
-                padding: "10px 20px",
-                background: "#0070f3",
-                color: "#fff",
-                border: "none",
-                borderRadius: "4px",
-                cursor: "pointer",
+                color: "#9ca3af",
+                display: "block",
+                marginBottom: "4px",
               }}
             >
-              Send
-            </button>
-          </form>
+              Your Personal Chat ID:
+            </span>
+            <code
+              style={{
+                background: "#1f2937",
+                border: "1px solid #4b5563",
+                padding: "6px",
+                display: "block",
+                wordBreak: "break-all",
+                color: "#60a5fa",
+                borderRadius: "4px",
+                fontSize: "12px",
+              }}
+            >
+              {session.user.id}
+            </code>
+          </div>
+          <div>
+            <span
+              style={{
+                color: "#9ca3af",
+                display: "block",
+                marginBottom: "4px",
+              }}
+            >
+              Recipient Friend's Chat ID:
+            </span>
+            <input
+              type="text"
+              placeholder="Paste friend's long UUID key..."
+              value={friendId}
+              onChange={(e) => setFriendId(e.target.value)}
+              style={{
+                width: "100%",
+                bg: "#1f2937",
+                border: "1px solid #4b5563",
+                color: "#4ade80",
+                padding: "8px",
+                boxSizing: "border-box",
+                borderRadius: "4px",
+                background: "#111827",
+              }}
+            />
+          </div>
         </div>
-      ) : (
-        <p style={{ textAlign: "center", color: "#999", fontStyle: "italic" }}>
-          Please paste a friend's Chat ID above to initiate a secure space.
-        </p>
-      )}
+
+        {/* Messages Stream Area */}
+        <div
+          style={{
+            height: "300px",
+            overflowY: "auto",
+            padding: "10px",
+            background: "#111827",
+            borderRadius: "8px",
+            border: "1px solid #374151",
+          }}
+        >
+          {!friendId.trim() ? (
+            <p
+              style={{
+                color: "#6b7280",
+                textAlign: "center",
+                paddingTop: "100px",
+                fontStyle: "italic",
+              }}
+            >
+              Please paste a partner's Chat ID above to initiate a secure
+              interface. 🔐
+            </p>
+          ) : messages.length === 0 ? (
+            <p
+              style={{
+                color: "#6b7280",
+                textAlign: "center",
+                paddingTop: "100px",
+              }}
+            >
+              Secured channel activated. Say hello! 👋
+            </p>
+          ) : (
+            messages.map((msg) => {
+              const isMe = msg.sender_id === session.user.id;
+              return (
+                <div
+                  key={msg.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: isMe ? "flex-end" : "flex-start",
+                    margin: "10px 0",
+                  }}
+                >
+                  <div
+                    style={{
+                      background: isMe ? "#2563eb" : "#374151",
+                      padding: "10px",
+                      borderRadius: "12px",
+                      maxWidth: "70%",
+                    }}
+                  >
+                    <p style={{ margin: 0, fontSize: "15px" }}>{msg.text}</p>
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Form Action Footer */}
+        <form
+          onSubmit={handleSendMessage}
+          style={{ display: "flex", gap: "8px", marginTop: "15px" }}
+        >
+          <input
+            type="text"
+            value={message}
+            disabled={!friendId.trim()}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder={
+              friendId.trim()
+                ? "Type a private message..."
+                : "Unlock input by providing an ID above..."
+            }
+            style={{
+              flexGrow: 1,
+              background: "#374151",
+              border: "1px solid #4b5563",
+              borderRadius: "8px",
+              padding: "12px",
+              color: "white",
+            }}
+          />
+          <button
+            type="submit"
+            disabled={!friendId.trim()}
+            style={{
+              background: "#3b82f6",
+              color: "white",
+              padding: "0 24px",
+              borderRadius: "8px",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            Send
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
 
-export default ChatRoom;
+export default App;
