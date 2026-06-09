@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { supabase } from "./supabaseClient"; // Make sure your path matches your project layout
+import { supabase } from "..supabaseClient"; // Make sure your path matches your project layout
 
 function ChatRoom({ user }) {
   const [messages, setMessages] = useState([]);
