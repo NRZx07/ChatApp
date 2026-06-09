@@ -78,7 +78,9 @@ function App() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: window.location.origin,
+        // Hardcode your exact Vercel URL here instead of using window.location.origin
+        redirectTo:
+          "https://chat-14tmjx58h-nirajs-projects-6e46d474.vercel.app/",
       },
     });
 
