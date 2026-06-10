@@ -54,38 +54,31 @@ function App() {
 
     fetchPrivateMessages();
 
-    // Streamlined real-time subscription channel logic
+    // Use an isolated channel naming convention combining both IDs to prevent noise
+    const channelRoomName = `room-${[session.user.id, friendId.trim()].sort().join("-")}`;
+
     const channel = supabase
-      .channel(`private-room-${session.user.id}-${friendId.trim()}`)
+      .channel(channelRoomName)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
           const msg = payload.new;
 
-          // Verify the message belongs to this specific conversation
-          const isRelevant =
-            (msg.sender_id === session.user.id &&
-              msg.receiver_id === friendId.trim()) ||
-            (msg.sender_id === friendId.trim() &&
-              msg.receiver_id === session.user.id);
+          // CRITICAL BUG FIX: If the message was sent by ME, do not append it via real-time.
+          // handleSendMessage already handles adding and resolving this message in our state.
+          if (msg.sender_id === session.user.id) {
+            return;
+          }
 
-          if (isRelevant) {
+          // If the incoming message came from the friend to me, add it safely
+          if (
+            msg.sender_id === friendId.trim() &&
+            msg.receiver_id === session.user.id
+          ) {
             setMessages((prev) => {
-              // FIX: Prevent double messages if the message is already in state (via optimistic id matching)
-              if (
-                prev.some(
-                  (m) =>
-                    m.id === msg.id ||
-                    (m.isOptimistic &&
-                      m.text === msg.text &&
-                      m.sender_id === msg.sender_id),
-                )
-              ) {
-                return prev.map((m) =>
-                  m.isOptimistic && m.text === msg.text ? msg : m,
-                );
-              }
+              // Deduplicate just in case
+              if (prev.some((m) => m.id === msg.id)) return prev;
               return [...prev, msg];
             });
           }
@@ -103,7 +96,7 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // 4. Google Authentication Actions
+  // 4. Google Authentication In/Out Actions
   const signIn = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -128,19 +121,21 @@ function App() {
     const typedText = message;
     setMessage("");
 
-    const temporaryId = `temp-${Date.now()}`;
+    // Generate a unique client side string to trace our optimistic item
+    const clientSideId = `client-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
     const optimisticMessage = {
-      id: temporaryId,
+      id: clientSideId,
       text: typedText,
       sender_id: session.user.id,
       receiver_id: friendId.trim(),
       user_name: session.user.user_metadata?.full_name || "User",
       user_avatar: session.user.user_metadata?.picture,
       created_at: new Date().toISOString(),
-      isOptimistic: true, // Marker flag to track UI placement
+      isOptimistic: true, // Used to give a subtle visual fade while sending
     };
 
-    // Show message immediately in UI
+    // Append optimistic message right away
     setMessages((prev) => [...prev, optimisticMessage]);
 
     const { error, data } = await supabase
@@ -158,17 +153,18 @@ function App() {
 
     if (error) {
       console.error("Error inserting message:", error.message);
-      setMessages((prev) => prev.filter((msg) => msg.id !== temporaryId));
-      setMessage(typedText); // Return typed text to the input field on failure
+      // Evict message placeholder if backend breaks down
+      setMessages((prev) => prev.filter((msg) => msg.id !== clientSideId));
+      setMessage(typedText); // Hand back user data to the input box
     } else if (data && data[0]) {
-      // Replace optimistic placeholder message with actual database message row
+      // Replace the optimistic entry smoothly with the true DB record row
       setMessages((prev) =>
-        prev.map((msg) => (msg.id === temporaryId ? data[0] : msg)),
+        prev.map((msg) => (msg.id === clientSideId ? data[0] : msg)),
       );
     }
   };
 
-  // GUARDS
+  // GUARD A: If session is completely unknown, show loading screen
   if (session === undefined) {
     return (
       <div
@@ -187,6 +183,7 @@ function App() {
     );
   }
 
+  // GUARD B: If not logged in, show Auth Wall
   if (!session) {
     return (
       <div
@@ -218,6 +215,7 @@ function App() {
     );
   }
 
+  // MAIN CONTENT VIEW
   return (
     <div
       style={{
@@ -397,6 +395,7 @@ function App() {
                       padding: "10px",
                       borderRadius: "12px",
                       maxWidth: "70%",
+                      // Slightly fade out the bubble while it is still uploading
                       opacity: msg.isOptimistic ? 0.6 : 1,
                     }}
                   >
