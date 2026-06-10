@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { supabase } from "../supabaseClient"; // double check if it should be "./supabaseClient" based on your folders!
+import { supabase } from "../supabaseClient";
 
 function App() {
   const [session, setSession] = useState(undefined);
@@ -31,7 +31,6 @@ function App() {
 
   // 2. Fetch Private History & Open Isolated Realtime Subscription
   useEffect(() => {
-    // CRITICAL GUARD: Stop executing if there is no logged-in user session
     if (!session?.user) return;
 
     if (!friendId.trim()) {
@@ -55,20 +54,40 @@ function App() {
 
     fetchPrivateMessages();
 
+    // Streamlined real-time subscription channel logic
     const channel = supabase
-      .channel(`private-room-${friendId.trim()}`)
+      .channel(`private-room-${session.user.id}-${friendId.trim()}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
           const msg = payload.new;
-          if (
+
+          // Verify the message belongs to this specific conversation
+          const isRelevant =
             (msg.sender_id === session.user.id &&
               msg.receiver_id === friendId.trim()) ||
             (msg.sender_id === friendId.trim() &&
-              msg.receiver_id === session.user.id)
-          ) {
-            setMessages((prev) => [...prev, msg]);
+              msg.receiver_id === session.user.id);
+
+          if (isRelevant) {
+            setMessages((prev) => {
+              // FIX: Prevent double messages if the message is already in state (via optimistic id matching)
+              if (
+                prev.some(
+                  (m) =>
+                    m.id === msg.id ||
+                    (m.isOptimistic &&
+                      m.text === msg.text &&
+                      m.sender_id === msg.sender_id),
+                )
+              ) {
+                return prev.map((m) =>
+                  m.isOptimistic && m.text === msg.text ? msg : m,
+                );
+              }
+              return [...prev, msg];
+            });
           }
         },
       )
@@ -84,7 +103,7 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // 4. Google Authentication In/Out Actions
+  // 4. Google Authentication Actions
   const signIn = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
@@ -109,20 +128,19 @@ function App() {
     const typedText = message;
     setMessage("");
 
-    const temporaryId = Date.now();
+    const temporaryId = `temp-${Date.now()}`;
     const optimisticMessage = {
       id: temporaryId,
       text: typedText,
       sender_id: session.user.id,
       receiver_id: friendId.trim(),
-      user_name:
-        session.user.user_metadata?.full_name ||
-        session.user.user_metadata?.name ||
-        "User",
+      user_name: session.user.user_metadata?.full_name || "User",
       user_avatar: session.user.user_metadata?.picture,
       created_at: new Date().toISOString(),
+      isOptimistic: true, // Marker flag to track UI placement
     };
 
+    // Show message immediately in UI
     setMessages((prev) => [...prev, optimisticMessage]);
 
     const { error, data } = await supabase
@@ -141,15 +159,16 @@ function App() {
     if (error) {
       console.error("Error inserting message:", error.message);
       setMessages((prev) => prev.filter((msg) => msg.id !== temporaryId));
-      setMessage(typedText);
+      setMessage(typedText); // Return typed text to the input field on failure
     } else if (data && data[0]) {
+      // Replace optimistic placeholder message with actual database message row
       setMessages((prev) =>
         prev.map((msg) => (msg.id === temporaryId ? data[0] : msg)),
       );
     }
   };
 
-  // GUARD A: If session is completely unknown, show loading screen (PREVENTS BLANK SCREEN CRASH)
+  // GUARDS
   if (session === undefined) {
     return (
       <div
@@ -168,7 +187,6 @@ function App() {
     );
   }
 
-  // GUARD B: If not logged in, show Auth Wall
   if (!session) {
     return (
       <div
@@ -200,7 +218,6 @@ function App() {
     );
   }
 
-  // MAIN CONTENT VIEW: Renders safely ONLY when session.user is verified to exist!
   return (
     <div
       style={{
@@ -225,7 +242,7 @@ function App() {
         <div
           style={{
             display: "flex",
-            justifyContent: "between",
+            justifyContent: "space-between",
             alignItems: "center",
             borderBottom: "1px solid #374151",
             paddingBottom: "15px",
@@ -259,7 +276,6 @@ function App() {
               borderRadius: "8px",
               border: "none",
               cursor: "pointer",
-              marginLeft: "auto",
             }}
           >
             Sign Out
@@ -319,7 +335,6 @@ function App() {
               onChange={(e) => setFriendId(e.target.value)}
               style={{
                 width: "100%",
-                bg: "#1f2937",
                 border: "1px solid #4b5563",
                 color: "#4ade80",
                 padding: "8px",
@@ -382,6 +397,7 @@ function App() {
                       padding: "10px",
                       borderRadius: "12px",
                       maxWidth: "70%",
+                      opacity: msg.isOptimistic ? 0.6 : 1,
                     }}
                   >
                     <p style={{ margin: 0, fontSize: "15px" }}>{msg.text}</p>
