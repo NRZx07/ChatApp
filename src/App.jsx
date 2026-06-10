@@ -65,7 +65,7 @@ function App() {
         (payload) => {
           const msg = payload.new;
 
-          // Double Fix: Check if the incoming message belongs to this specific conversation
+          // Check if the incoming message belongs to this specific conversation
           const isRelevant =
             (msg.sender_id === session.user.id &&
               msg.receiver_id === friendId.trim()) ||
@@ -73,10 +73,13 @@ function App() {
               msg.receiver_id === session.user.id);
 
           if (isRelevant) {
-            setMessages((prev) => {
+            // Functional state updater to evaluate absolute newest array state at runtime
+            setMessages((prevMessages) => {
               // Primary deduplication guard using row ID
-              if (prev.some((m) => m.id === msg.id)) return prev;
-              return [...prev, msg];
+              if (prevMessages.some((m) => m.id === msg.id)) {
+                return prevMessages;
+              }
+              return [...prevMessages, msg];
             });
           }
         },
@@ -207,7 +210,7 @@ function App() {
           padding: "20px",
         }}
       >
-        {/* Header Block */}
+        {/* 1. HEADER BLOCK */}
         <div
           style={{
             display: "flex",
@@ -215,6 +218,7 @@ function App() {
             alignItems: "center",
             borderBottom: "1px solid #374151",
             paddingBottom: "15px",
+            marginBottom: "15px",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -251,14 +255,14 @@ function App() {
           </button>
         </div>
 
-        {/* Identity Exchange Section */}
+        {/* 2. IDENTITY EXCHANGE */}
         <div
           style={{
             background: "#111827",
             border: "1px solid #374151",
             borderRadius: "8px",
             padding: "15px",
-            margin: "15px 0",
+            marginBottom: "15px",
             fontSize: "14px",
           }}
         >
@@ -270,18 +274,19 @@ function App() {
                 marginBottom: "4px",
               }}
             >
-              Your Personal Chat ID:
+              Your Personal Chat ID (Copy this and send to your friend):
             </span>
             <code
               style={{
                 background: "#1f2937",
                 border: "1px solid #4b5563",
-                padding: "6px",
+                padding: "8px",
                 display: "block",
                 wordBreak: "break-all",
                 color: "#60a5fa",
                 borderRadius: "4px",
                 fontSize: "12px",
+                userSelect: "all",
               }}
             >
               {session.user.id}
@@ -295,7 +300,7 @@ function App() {
                 marginBottom: "4px",
               }}
             >
-              Recipient Friend's Chat ID:
+              Recipient Friend's Chat ID (Paste their ID here):
             </span>
             <input
               type="text"
@@ -306,7 +311,7 @@ function App() {
                 width: "100%",
                 border: "1px solid #4b5563",
                 color: "#4ade80",
-                padding: "8px",
+                padding: "10px",
                 boxSizing: "border-box",
                 borderRadius: "4px",
                 background: "#111827",
@@ -315,7 +320,7 @@ function App() {
           </div>
         </div>
 
-        {/* Messages Stream Area */}
+        {/* 3. MESSAGES STREAM AREA */}
         <div
           style={{
             height: "300px",
@@ -335,8 +340,8 @@ function App() {
                 fontStyle: "italic",
               }}
             >
-              Please paste a partner's Chat ID above to initiate a secure
-              interface. 🔐
+              Please paste a partner's Chat ID above to unlock the chat window.
+              🔐
             </p>
           ) : messages.length === 0 ? (
             <p
@@ -377,7 +382,7 @@ function App() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Form Action Footer */}
+        {/* 4. FORM ACTION FOOTER */}
         <form
           onSubmit={handleSendMessage}
           style={{ display: "flex", gap: "8px", marginTop: "15px" }}
