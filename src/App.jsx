@@ -54,7 +54,7 @@ function App() {
 
     fetchPrivateMessages();
 
-    // Use an isolated channel naming convention combining both IDs to prevent noise
+    // Isolated channel name generated cleanly between the user pair
     const channelRoomName = `room-${[session.user.id, friendId.trim()].sort().join("-")}`;
 
     const channel = supabase
@@ -65,19 +65,16 @@ function App() {
         (payload) => {
           const msg = payload.new;
 
-          // CRITICAL BUG FIX: If the message was sent by ME, do not append it via real-time.
-          // handleSendMessage already handles adding and resolving this message in our state.
-          if (msg.sender_id === session.user.id) {
-            return;
-          }
+          // Double Fix: Check if the incoming message belongs to this specific conversation
+          const isRelevant =
+            (msg.sender_id === session.user.id &&
+              msg.receiver_id === friendId.trim()) ||
+            (msg.sender_id === friendId.trim() &&
+              msg.receiver_id === session.user.id);
 
-          // If the incoming message came from the friend to me, add it safely
-          if (
-            msg.sender_id === friendId.trim() &&
-            msg.receiver_id === session.user.id
-          ) {
+          if (isRelevant) {
             setMessages((prev) => {
-              // Deduplicate just in case
+              // Primary deduplication guard using row ID
               if (prev.some((m) => m.id === msg.id)) return prev;
               return [...prev, msg];
             });
@@ -119,48 +116,22 @@ function App() {
     if (!message.trim() || !session?.user || !friendId.trim()) return;
 
     const typedText = message;
-    setMessage("");
+    setMessage(""); // UI updates instantly by clearing out input field text
 
-    // Generate a unique client side string to trace our optimistic item
-    const clientSideId = `client-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    const optimisticMessage = {
-      id: clientSideId,
-      text: typedText,
-      sender_id: session.user.id,
-      receiver_id: friendId.trim(),
-      user_name: session.user.user_metadata?.full_name || "User",
-      user_avatar: session.user.user_metadata?.picture,
-      created_at: new Date().toISOString(),
-      isOptimistic: true, // Used to give a subtle visual fade while sending
-    };
-
-    // Append optimistic message right away
-    setMessages((prev) => [...prev, optimisticMessage]);
-
-    const { error, data } = await supabase
-      .from("messages")
-      .insert([
-        {
-          text: typedText,
-          sender_id: session.user.id,
-          receiver_id: friendId.trim(),
-          user_name: optimisticMessage.user_name,
-          user_avatar: optimisticMessage.user_avatar,
-        },
-      ])
-      .select();
+    // Send payload directly to database. Realtime listener safely catches the result.
+    const { error } = await supabase.from("messages").insert([
+      {
+        text: typedText,
+        sender_id: session.user.id,
+        receiver_id: friendId.trim(),
+        user_name: session.user.user_metadata?.full_name || "User",
+        user_avatar: session.user.user_metadata?.picture,
+      },
+    ]);
 
     if (error) {
       console.error("Error inserting message:", error.message);
-      // Evict message placeholder if backend breaks down
-      setMessages((prev) => prev.filter((msg) => msg.id !== clientSideId));
-      setMessage(typedText); // Hand back user data to the input box
-    } else if (data && data[0]) {
-      // Replace the optimistic entry smoothly with the true DB record row
-      setMessages((prev) =>
-        prev.map((msg) => (msg.id === clientSideId ? data[0] : msg)),
-      );
+      setMessage(typedText); // Return the text back to input field upon failure
     }
   };
 
@@ -395,8 +366,6 @@ function App() {
                       padding: "10px",
                       borderRadius: "12px",
                       maxWidth: "70%",
-                      // Slightly fade out the bubble while it is still uploading
-                      opacity: msg.isOptimistic ? 0.6 : 1,
                     }}
                   >
                     <p style={{ margin: 0, fontSize: "15px" }}>{msg.text}</p>
