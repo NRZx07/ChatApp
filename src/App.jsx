@@ -17,7 +17,6 @@ function App() {
       } = await supabase.auth.getSession();
       setSession(session);
     };
-
     getSession();
 
     const {
@@ -54,7 +53,6 @@ function App() {
 
     fetchPrivateMessages();
 
-    // Isolated channel name generated cleanly between the user pair
     const channelRoomName = `room-${[session.user.id, friendId.trim()].sort().join("-")}`;
 
     const channel = supabase
@@ -65,7 +63,6 @@ function App() {
         (payload) => {
           const msg = payload.new;
 
-          // Check if the incoming message belongs to this specific conversation
           const isRelevant =
             (msg.sender_id === session.user.id &&
               msg.receiver_id === friendId.trim()) ||
@@ -73,9 +70,9 @@ function App() {
               msg.receiver_id === session.user.id);
 
           if (isRelevant) {
-            // Functional state updater to evaluate absolute newest array state at runtime
+            // Functional state updater to evaluate the freshest array state at runtime
             setMessages((prevMessages) => {
-              // Primary deduplication guard using row ID
+              // Primary deduplication guard: drops duplicate real-time snapshots
               if (prevMessages.some((m) => m.id === msg.id)) {
                 return prevMessages;
               }
@@ -86,6 +83,7 @@ function App() {
       )
       .subscribe();
 
+    // The Critical Cleanup: Destroys duplicate listeners on component cycles
     return () => {
       supabase.removeChannel(channel);
     };
@@ -101,8 +99,7 @@ function App() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo:
-          "https://chat-14tmjx58h-nirajs-projects-6e46d474.vercel.app/",
+        redirectTo: window.location.origin, // Dynamically uses your current live Vercel link
       },
     });
     if (error) console.log(error.message);
@@ -119,9 +116,8 @@ function App() {
     if (!message.trim() || !session?.user || !friendId.trim()) return;
 
     const typedText = message;
-    setMessage(""); // UI updates instantly by clearing out input field text
+    setMessage(""); // Clear input instantly for UI speed
 
-    // Send payload directly to database. Realtime listener safely catches the result.
     const { error } = await supabase.from("messages").insert([
       {
         text: typedText,
@@ -134,11 +130,10 @@ function App() {
 
     if (error) {
       console.error("Error inserting message:", error.message);
-      setMessage(typedText); // Return the text back to input field upon failure
+      setMessage(typedText); // Fallback text back to input if network fails
     }
   };
 
-  // GUARD A: If session is completely unknown, show loading screen
   if (session === undefined) {
     return (
       <div
@@ -157,7 +152,6 @@ function App() {
     );
   }
 
-  // GUARD B: If not logged in, show Auth Wall
   if (!session) {
     return (
       <div
@@ -189,7 +183,6 @@ function App() {
     );
   }
 
-  // MAIN CONTENT VIEW
   return (
     <div
       style={{
@@ -200,6 +193,23 @@ function App() {
         fontFamily: "sans-serif",
       }}
     >
+      {/* VERSION VERIFICATION BANNER */}
+      <div
+        style={{
+          background: "#22c55e",
+          color: "#052e16",
+          padding: "12px",
+          textAlign: "center",
+          fontWeight: "bold",
+          borderRadius: "8px",
+          marginBottom: "20px",
+          fontSize: "15px",
+        }}
+      >
+        LATEST CHAT VERSION IS LIVE 🚀 (Layout & Anti-Duplication Patch
+        Configured)
+      </div>
+
       <div
         style={{
           background: "#1f2937",
@@ -210,7 +220,7 @@ function App() {
           padding: "20px",
         }}
       >
-        {/* 1. HEADER BLOCK */}
+        {/* HEADER BLOCK */}
         <div
           style={{
             display: "flex",
@@ -249,13 +259,14 @@ function App() {
               borderRadius: "8px",
               border: "none",
               cursor: "pointer",
+              fontWeight: "bold",
             }}
           >
             Sign Out
           </button>
         </div>
 
-        {/* 2. IDENTITY EXCHANGE */}
+        {/* IDENTITY EXCHANGE SYSTEM */}
         <div
           style={{
             background: "#111827",
@@ -266,7 +277,7 @@ function App() {
             fontSize: "14px",
           }}
         >
-          <div style={{ marginBottom: "10px" }}>
+          <div style={{ marginBottom: "12px" }}>
             <span
               style={{
                 color: "#9ca3af",
@@ -274,7 +285,7 @@ function App() {
                 marginBottom: "4px",
               }}
             >
-              Your Personal Chat ID (Copy this and send to your friend):
+              Your Personal Chat ID:
             </span>
             <code
               style={{
@@ -300,7 +311,7 @@ function App() {
                 marginBottom: "4px",
               }}
             >
-              Recipient Friend's Chat ID (Paste their ID here):
+              Recipient Friend's Chat ID:
             </span>
             <input
               type="text"
@@ -320,15 +331,17 @@ function App() {
           </div>
         </div>
 
-        {/* 3. MESSAGES STREAM AREA */}
+        {/* MESSAGES STREAM AREA */}
         <div
           style={{
-            height: "300px",
+            height: "350px",
             overflowY: "auto",
-            padding: "10px",
+            padding: "15px",
             background: "#111827",
             borderRadius: "8px",
             border: "1px solid #374151",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
           {!friendId.trim() ? (
@@ -336,8 +349,9 @@ function App() {
               style={{
                 color: "#6b7280",
                 textAlign: "center",
-                paddingTop: "100px",
+                paddingTop: "120px",
                 fontStyle: "italic",
+                margin: 0,
               }}
             >
               Please paste a partner's Chat ID above to unlock the chat window.
@@ -348,7 +362,8 @@ function App() {
               style={{
                 color: "#6b7280",
                 textAlign: "center",
-                paddingTop: "100px",
+                paddingTop: "120px",
+                margin: 0,
               }}
             >
               Secured channel activated. Say hello! 👋
@@ -361,16 +376,21 @@ function App() {
                   key={msg.id}
                   style={{
                     display: "flex",
-                    justifyContent: isMe ? "flex-end" : "flex-start",
-                    margin: "10px 0",
+                    justifyContent: isMe ? "flex-end" : "flex-start", // CamelCase layout alignment fix
+                    margin: "6px 0",
+                    width: "100%",
                   }}
                 >
                   <div
                     style={{
                       background: isMe ? "#2563eb" : "#374151",
-                      padding: "10px",
-                      borderRadius: "12px",
-                      maxWidth: "70%",
+                      color: "white",
+                      padding: "10px 14px",
+                      borderRadius: isMe
+                        ? "12px 12px 0px 12px"
+                        : "12px 12px 12px 0px",
+                      maxWidth: "75%",
+                      wordBreak: "break-word",
                     }}
                   >
                     <p style={{ margin: 0, fontSize: "15px" }}>{msg.text}</p>
@@ -382,7 +402,7 @@ function App() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* 4. FORM ACTION FOOTER */}
+        {/* ACTION FORM FOOTER */}
         <form
           onSubmit={handleSendMessage}
           style={{ display: "flex", gap: "8px", marginTop: "15px" }}
@@ -404,6 +424,7 @@ function App() {
               borderRadius: "8px",
               padding: "12px",
               color: "white",
+              outline: "none",
             }}
           />
           <button
